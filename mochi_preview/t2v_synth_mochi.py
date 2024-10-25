@@ -1,36 +1,5 @@
 import json
-from typing import Dict, List, Optional, Union
-
-#temporary patch to fix bug in Windows
-def patched_write_atomic(
-    path_: str,
-    content: Union[str, bytes],
-    make_dirs: bool = False,
-    encode_utf_8: bool = False,
-) -> None:
-    # Write into temporary file first to avoid conflicts between threads
-    # Avoid using a named temporary file, as those have restricted permissions
-    from pathlib import Path
-    import os
-    import shutil
-    import threading
-    assert isinstance(
-        content, (str, bytes)
-    ), "Only strings and byte arrays can be saved in the cache"
-    path = Path(path_)
-    if make_dirs:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.parent / f".{os.getpid()}.{threading.get_ident()}.tmp"
-    write_mode = "w" if isinstance(content, str) else "wb"
-    with tmp_path.open(write_mode, encoding="utf-8" if encode_utf_8 else None) as f:
-        f.write(content)
-    shutil.copy2(src=tmp_path, dst=path) #to allow overwriting cache files
-    os.remove(tmp_path)
-try:
-    import torch._inductor.codecache
-    torch._inductor.codecache.write_atomic = patched_write_atomic
-except:
-    pass
+from typing import Dict, List
 
 import torch
 import torch.nn.functional as F
@@ -78,8 +47,6 @@ def unnormalize_latents(
     assert z.ndim == 5
     assert z.size(1) == mean.size(0) == std.size(0)
     return z * std.to(z) + mean.to(z)
-
-
 
 def compute_packed_indices(
     N: int,
@@ -131,8 +98,7 @@ class T2VSynthMochiModel:
         dit_checkpoint_path: str,
         weight_dtype: torch.dtype = torch.float8_e4m3fn,
         fp8_fastmode: bool = False,
-        attention_mode: str = "sdpa",
-        compile_args: Optional[Dict] = None,
+        attention_mode: str = "sdpa"
     ):
         super().__init__()
         self.device = device
@@ -191,17 +157,8 @@ class T2VSynthMochiModel:
             from ..fp8_optimization import convert_fp8_linear
             convert_fp8_linear(model, torch.bfloat16)
 
-        model = model.eval().to(self.device)
-
-        #torch.compile
-        if compile_args is not None:
-            if compile_args["compile_dit"]:
-                for i, block in enumerate(model.blocks):
-                    model.blocks[i] = torch.compile(block, fullgraph=compile_args["fullgraph"], dynamic=False, backend=compile_args["backend"])
-            if compile_args["compile_final_layer"]:
-                model.final_layer = torch.compile(model.final_layer, fullgraph=compile_args["fullgraph"], dynamic=False, backend=compile_args["backend"])        
-
         self.dit = model
+        self.dit.eval()
         
         vae_stats = json.load(open(vae_stats_path))
         self.vae_mean = torch.Tensor(vae_stats["mean"]).to(self.device)

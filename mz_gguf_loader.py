@@ -19,22 +19,18 @@ class quantize_lazy_load():
 
 
 def quantize_load_state_dict(model, state_dict, device="cpu"):
-    quant_keys = []
+    Q4_0_qkey = []
     for key in state_dict.keys():
         if key.endswith(".Q4_0_qweight"):
-            quant_keys.append(key.replace(".Q4_0_qweight", ""))
-            qtype = "Q4_0"
-        elif key.endswith(".Q8_0_qweight"):
-            quant_keys.append(key.replace(".Q8_0_qweight", ""))
-            qtype = "Q8_0"
+            Q4_0_qkey.append(key.replace(".Q4_0_qweight", ""))
 
     for name, module in model.named_modules():
-        if name in quant_keys:
+        if name in Q4_0_qkey:
             #print(name)
             q_linear = WQLinear_GGUF.from_linear(
                 linear=module,
                 device=device,
-                qtype=qtype,
+                qtype="Q4_0",
             )
             set_op_by_name(model, name, q_linear)
 
@@ -126,9 +122,6 @@ class WQLinear_GGUF(nn.Module):
         if self.qtype == "Q4_0":
             x = F.linear(x, dequantize_blocks_Q4_0(
                 self.Q4_0_qweight, x.dtype), self.bias.to(x.dtype) if self.bias is not None else None)
-        elif self.qtype == "Q8_0":
-            x = F.linear(x, dequantize_blocks_Q8_0(
-                self.Q8_0_qweight, x.dtype), self.bias.to(x.dtype) if self.bias is not None else None)
         else:
             raise ValueError(f"Unknown qtype: {self.qtype}")
 
@@ -146,7 +139,7 @@ def quant_shape_to_byte_shape(shape, qtype) -> tuple[int, ...]:
     block_size, type_size = GGML_QUANT_SIZES[qtype]
     if shape[-1] % block_size != 0:
         raise ValueError(
-            f"Quantized tensor row size ({shape[-1]}) is not a multiple of {qtype}  block size ({block_size})")
+            f"Quantized tensor row size ({shape[-1]}) is not a multiple of Q4_0 block size ({block_size})")
     return (*shape[:-1], shape[-1] // block_size * type_size)
 
 
@@ -155,14 +148,15 @@ def quant_shape_from_byte_shape(shape, qtype) -> tuple[int, ...]:
     block_size, type_size = GGML_QUANT_SIZES[qtype]
     if shape[-1] % type_size != 0:
         raise ValueError(
-            f"Quantized tensor bytes per row ({shape[-1]}) is not a multiple of {qtype} type size ({type_size})")
+            f"Quantized tensor bytes per row ({shape[-1]}) is not a multiple of Q4_0 type size ({type_size})")
     return (*shape[:-1], shape[-1] // type_size * block_size)
 
 
 GGML_QUANT_SIZES = {
     "Q4_0": (32, 2 + 16),
-    "Q8_0": (32, 2 + 32),
 }
+
+
 def dequantize_blocks_Q4_0(data, dtype=torch.float16):
     block_size, type_size = GGML_QUANT_SIZES["Q4_0"]
 
@@ -192,30 +186,4 @@ def dequantize_blocks_Q4_0(data, dtype=torch.float16):
         qtype="Q4_0",
     )).to(dtype)
     return out
-def dequantize_blocks_Q8_0(data, dtype=torch.float16):
-    block_size, type_size = GGML_QUANT_SIZES["Q8_0"]
 
-    data = data.to(torch.uint8)
-    shape = data.shape
-
-    rows = data.reshape(
-        (-1, data.shape[-1])
-    ).view(torch.uint8)
-
-    n_blocks = rows.numel() // type_size
-    blocks = data.reshape((n_blocks, type_size))
-
-    n_blocks = blocks.shape[0]
-
-    d, qs = split_block_dims(blocks, 2)
-    d = d.view(torch.float16).to(torch.float32)
-
-    qs = qs.view(torch.int8).to(torch.float32)
-
-    out = (d * qs)
-
-    out = out.reshape(quant_shape_from_byte_shape(
-        shape,
-        qtype="Q8_0",
-    )).to(dtype)
-    return out

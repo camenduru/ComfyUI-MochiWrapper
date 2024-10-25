@@ -49,8 +49,7 @@ class DownloadAndLoadMochiModel:
                     [   
                         "mochi_preview_dit_fp8_e4m3fn.safetensors",
                         "mochi_preview_dit_bf16.safetensors",
-                        "mochi_preview_dit_GGUF_Q4_0_v2.safetensors",
-                        "mochi_preview_dit_GGUF_Q8_0.safetensors",
+                        "mochi_preview_dit_GGUF_Q4_0_v1.safetensors"
 
                     ],
                     {"tooltip": "Downloads from 'https://huggingface.co/Kijai/Mochi_preview_comfy' to 'models/diffusion_models/mochi'", },
@@ -68,7 +67,6 @@ class DownloadAndLoadMochiModel:
             },
             "optional": {
                 "trigger": ("CONDITIONING", {"tooltip": "Dummy input for forcing execution order",}),
-                "compile_args": ("MOCHICOMPILEARGS", {"tooltip": "Optional torch.compile arguments",}),
             },
         }
 
@@ -78,7 +76,7 @@ class DownloadAndLoadMochiModel:
     CATEGORY = "MochiWrapper"
     DESCRIPTION = "Downloads and loads the selected Mochi model from Huggingface"
 
-    def loadmodel(self, model, vae, precision, attention_mode, trigger=None, compile_args=None):
+    def loadmodel(self, model, vae, precision, attention_mode, trigger=None):
 
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
@@ -122,8 +120,7 @@ class DownloadAndLoadMochiModel:
             dit_checkpoint_path=model_path,
             weight_dtype=dtype,
             fp8_fastmode = True if precision == "fp8_e4m3fn_fast" else False,
-            attention_mode=attention_mode,
-            compile_args=compile_args
+            attention_mode=attention_mode
         )
         with (init_empty_weights() if is_accelerate_available else nullcontext()):
             vae = Decoder(
@@ -151,126 +148,6 @@ class DownloadAndLoadMochiModel:
         del vae_sd
 
         return (model, vae,)
-    
-class MochiModelLoader:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": { 
-                "model_name": (folder_paths.get_filename_list("diffusion_models"), {"tooltip": "The name of the checkpoint (model) to load.",}),
-                "precision": (["fp8_e4m3fn","fp8_e4m3fn_fast","fp16", "fp32", "bf16"], {"default": "fp8_e4m3fn"}),
-                "attention_mode": (["sdpa","flash_attn","sage_attn", "comfy"],),
-            },
-            "optional": {
-                "trigger": ("CONDITIONING", {"tooltip": "Dummy input for forcing execution order",}),
-                "compile_args": ("MOCHICOMPILEARGS", {"tooltip": "Optional torch.compile arguments",}),
-            },
-        }
-    RETURN_TYPES = ("MOCHIMODEL",)
-    RETURN_NAMES = ("mochi_model",)
-    FUNCTION = "loadmodel"
-    CATEGORY = "MochiWrapper"
-
-    def loadmodel(self, model_name, precision, attention_mode, trigger=None, compile_args=None):
-
-        device = mm.get_torch_device()
-        offload_device = mm.unet_offload_device()
-        mm.soft_empty_cache()
-
-        dtype = {"fp8_e4m3fn": torch.float8_e4m3fn, "fp8_e4m3fn_fast": torch.float8_e4m3fn, "bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
-        model_path = folder_paths.get_full_path_or_raise("diffusion_models", model_name)
-
-        model = T2VSynthMochiModel(
-            device=device,
-            offload_device=offload_device,
-            vae_stats_path=os.path.join(script_directory, "configs", "vae_stats.json"),
-            dit_checkpoint_path=model_path,
-            weight_dtype=dtype,
-            fp8_fastmode = True if precision == "fp8_e4m3fn_fast" else False,
-            attention_mode=attention_mode,
-            compile_args=compile_args
-        )
-
-        return (model, )
-
-class MochiTorchCompileSettings:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": { 
-                "backend": (["inductor","cudagraphs"], {"default": "inductor"}),
-                "fullgraph": ("BOOLEAN", {"default": False, "tooltip": "Enable full graph mode"}),
-                "mode": (["default", "max-autotune", "max-autotune-no-cudagraphs", "reduce-overhead"], {"default": "default"}),
-                "compile_dit": ("BOOLEAN", {"default": True, "tooltip": "Compiles all transformer blocks"}),
-                "compile_final_layer": ("BOOLEAN", {"default": True, "tooltip": "Enable compiling final layer."}),
-            },
-        }
-    RETURN_TYPES = ("MOCHICOMPILEARGS",)
-    RETURN_NAMES = ("torch_compile_args",)
-    FUNCTION = "loadmodel"
-    CATEGORY = "MochiWrapper"
-    DESCRIPTION = "torch.compile settings, when connected to the model loader, torch.compile of the selected layers is attempted. Requires Triton and torch 2.5.0 is recommended"
-
-    def loadmodel(self, backend, fullgraph, mode, compile_dit, compile_final_layer):
-
-        compile_args = {
-            "backend": backend,
-            "fullgraph": fullgraph,
-            "mode": mode,
-            "compile_dit": compile_dit,
-            "compile_final_layer": compile_final_layer,
-        }
-
-        return (compile_args, )
-    
-class MochiVAELoader:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": { 
-                "model_name": (folder_paths.get_filename_list("vae"), {"tooltip": "The name of the checkpoint (vae) to load."}),
-            },
-        }
-
-    RETURN_TYPES = ("MOCHIVAE",)
-    RETURN_NAMES = ("mochi_vae", )
-    FUNCTION = "loadmodel"
-    CATEGORY = "MochiWrapper"
-
-    def loadmodel(self, model_name):
-
-        device = mm.get_torch_device()
-        offload_device = mm.unet_offload_device()
-        mm.soft_empty_cache()
-
-        vae_path = folder_paths.get_full_path_or_raise("vae", model_name)
-
-        with (init_empty_weights() if is_accelerate_available else nullcontext()):
-            vae = Decoder(
-                    out_channels=3,
-                    base_channels=128,
-                    channel_multipliers=[1, 2, 4, 6],
-                    temporal_expansions=[1, 2, 3],
-                    spatial_expansions=[2, 2, 2],
-                    num_res_blocks=[3, 3, 4, 6, 3],
-                    latent_dim=12,
-                    has_attention=[False, False, False, False, False],
-                    padding_mode="replicate",
-                    output_norm=False,
-                    nonlinearity="silu",
-                    output_nonlinearity="silu",
-                    causal=True,
-                )
-        vae_sd = load_torch_file(vae_path)
-        if is_accelerate_available:
-            for key in vae_sd:
-                set_module_tensor_to_device(vae, key, dtype=torch.float32, device=device, value=vae_sd[key])
-        else:
-            vae.load_state_dict(vae_sd, strict=True)
-            vae.eval().to(torch.bfloat16).to("cpu")
-        del vae_sd
-
-        return (vae,)
     
 class MochiTextEncode:
     @classmethod
@@ -498,74 +375,16 @@ class MochiDecode:
 
         return (frames,)
 
-class MochiDecodeSpatialTiling:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": {
-            "vae": ("MOCHIVAE",),
-            "samples": ("LATENT", ),
-            "enable_vae_tiling": ("BOOLEAN", {"default": False, "tooltip": "Drastically reduces memory use but may introduce seams"}),
-            "num_tiles_w": ("INT", {"default": 4, "min": 2, "max": 64, "step": 2, "tooltip": "Number of horizontal tiles"}),
-            "num_tiles_h": ("INT", {"default": 4, "min": 2, "max": 64, "step": 2, "tooltip": "Number of vertical tiles"}),
-            "overlap": ("INT", {"default": 16, "min": 0, "max": 256, "step": 1, "tooltip": "Number of pixel of overlap between adjacent tiles"}),
-            "min_block_size": ("INT", {"default": 1, "min": 1, "max": 256, "step": 1, "tooltip": "Minimum number of pixels in each dimension when subdividing"}),
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
-    FUNCTION = "decode"
-    CATEGORY = "MochiWrapper"
-
-    def decode(self, vae, samples, enable_vae_tiling, num_tiles_w, num_tiles_h, overlap, 
-               min_block_size):
-        device = mm.get_torch_device()
-        offload_device = mm.unet_offload_device()
-        intermediate_device = mm.intermediate_device()
-        samples = samples["samples"]
-        samples = samples.to(torch.bfloat16).to(device)
-
-        B, C, T, H, W = samples.shape
-
-        vae.to(device)
-        
-        with torch.autocast(mm.get_autocast_device(device), dtype=torch.bfloat16):
-            if enable_vae_tiling:
-                from .mochi_preview.vae.model import apply_tiled
-                logging.warning("Decoding with tiling...")
-                frames = apply_tiled(vae, samples, num_tiles_w = num_tiles_w, num_tiles_h = num_tiles_h, overlap=overlap, min_block_size=min_block_size)
-            else:
-                logging.info("Decoding without tiling...")
-                frames = vae(samples)
-                
-        vae.to(offload_device)
-
-        frames = frames.float()
-        frames = (frames + 1.0) / 2.0
-        frames.clamp_(0.0, 1.0)
-
-        frames = rearrange(frames, "b c t h w -> (t b) h w c").to(intermediate_device)
-
-        return (frames,)
-
 
 NODE_CLASS_MAPPINGS = {
     "DownloadAndLoadMochiModel": DownloadAndLoadMochiModel,
     "MochiSampler": MochiSampler,
     "MochiDecode": MochiDecode,
     "MochiTextEncode": MochiTextEncode,
-    "MochiModelLoader": MochiModelLoader,
-    "MochiVAELoader": MochiVAELoader,
-    "MochiDecodeSpatialTiling": MochiDecodeSpatialTiling,
-    "MochiTorchCompileSettings": MochiTorchCompileSettings
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "DownloadAndLoadMochiModel": "(Down)load Mochi Model",
     "MochiSampler": "Mochi Sampler",
     "MochiDecode": "Mochi Decode",
     "MochiTextEncode": "Mochi TextEncode",
-    "MochiModelLoader": "Mochi Model Loader",
-    "MochiVAELoader": "Mochi VAE Loader",
-    "MochiDecodeSpatialTiling": "Mochi VAE Decode Spatial Tiling",
-    "MochiTorchCompileSettings": "Mochi Torch Compile Settings"
     }

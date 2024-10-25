@@ -42,11 +42,12 @@ try:
 except ImportError:
     SAGEATTN_IS_AVAILABLE = False
 
+COMPILE_FINAL_LAYER = False #os.environ.get("COMPILE_DIT") == "1"
+COMPILE_MMDIT_BLOCK = False #os.environ.get("COMPILE_DIT") == "1"
+
 backends = []
-if torch.cuda.get_device_properties(0).major <= 7.5:
+if torch.cuda.get_device_properties(0).major < 7:
     backends.append(SDPBackend.MATH)
-if torch.cuda.get_device_properties(0).major >= 9.0:
-    backends.append(SDPBackend.CUDNN_ATTENTION)
 else:
     backends.append(SDPBackend.EFFICIENT_ATTENTION)
 
@@ -123,7 +124,7 @@ class AsymmetricAttention(nn.Module):
         qkv_y = qkv_y.view(qkv_y.size(0), qkv_y.size(1), 3, local_heads, self.head_dim)
         q_y, k_y, v_y = qkv_y.unbind(2)
         return q_y, k_y, v_y
-    
+
     def prepare_qkv(
         self,
         x: torch.Tensor,  # (B, N, dim_x)
@@ -314,6 +315,7 @@ class AsymmetricAttention(nn.Module):
         )
         return x, y
 
+#@torch.compile(disable=not COMPILE_MMDIT_BLOCK)
 class AsymmetricJointBlock(nn.Module):
     def __init__(
         self,
@@ -437,6 +439,7 @@ class AsymmetricJointBlock(nn.Module):
         return y
 
 
+#@torch.compile(disable=not COMPILE_FINAL_LAYER)
 class FinalLayer(nn.Module):
     """
     The final layer of DiT.
@@ -581,6 +584,7 @@ class AsymmDiTJoint(nn.Module):
         """
         return self.x_embedder(x)  # Convert BcTHW to BCN
 
+    #@torch.compile(disable=not COMPILE_MMDIT_BLOCK)
     def prepare(
         self,
         x: torch.Tensor,
